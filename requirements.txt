@@ -1,0 +1,5 @@
+requests>=2.31
+PyYAML>=6.0
+# AppWorld itself - install separately, it also needs `appworld install`
+# and `appworld download data` after pip:
+appworld>=0.1.3

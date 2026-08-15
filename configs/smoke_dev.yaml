@@ -1,0 +1,36 @@
+# Tiny end-to-end shakeout: 4 dev tasks x 2 rollouts x 12 steps.
+# Run this FIRST. It costs a few hundred generations instead of ~100k.
+
+llm:
+  base_url: "http://localhost:8000/v1"
+  api_key: "EMPTY"
+  model: "Qwen/Qwen2.5-7B-Instruct"
+  temperature: 0.7
+  top_p: 0.8
+  max_tokens: 1024
+  extra_body:
+    repetition_penalty: 1.05
+
+agent:
+  max_steps: 12
+  output_char_limit: 2000
+  history_strategy: "sliding"
+  keep_last_n_steps: 8
+
+env:
+  remote_environment_url: null
+
+run:
+  experiment_prefix: "smoke_dev"
+  split: "dev"
+  num_rollouts: 2
+  seed_base: 7000
+  max_workers: 2
+  output_dir: "results"
+  resume: true
+  task_ids_file: null
+
+sample:
+  strategy: "first_n"
+  size: 4
+  seed: 0

@@ -1,0 +1,9 @@
+Metadata-Version: 2.4
+Name: appworld-vanilla-eval
+Version: 0.1.0
+Summary: Modular vanilla (direct-inference) evaluation pipeline for AppWorld
+Requires-Python: >=3.10
+Requires-Dist: requests>=2.31
+Requires-Dist: PyYAML>=6.0
+Provides-Extra: appworld
+Requires-Dist: appworld>=0.1.3; extra == "appworld"

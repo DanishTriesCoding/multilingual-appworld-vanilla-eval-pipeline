@@ -1,0 +1,2 @@
+[console_scripts]
+appworld-vanilla = appworld_vanilla.cli:main

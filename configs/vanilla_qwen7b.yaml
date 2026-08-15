@@ -1,0 +1,48 @@
+# Vanilla (direct-inference) Qwen2.5-7B-Instruct on AppWorld.
+# No training, no self-evolution, no experience pool - just the off-the-shelf
+# instruct checkpoint acting in the environment.
+
+llm:
+  base_url: "http://localhost:8000/v1"   # <- your already-running server
+  api_key: "EMPTY"
+  model: "Qwen/Qwen2.5-7B-Instruct"      # must match what /v1/models reports
+  temperature: 0.7                        # MUST be > 0 or all 8 rollouts match
+  top_p: 0.8
+  max_tokens: 1024
+  timeout: 300
+  max_retries: 4
+  send_seed: true
+  extra_body:
+    repetition_penalty: 1.05
+
+agent:
+  max_steps: 40
+  output_char_limit: 3000
+  history_strategy: "sliding"    # "full" if your context window can take it
+  keep_last_n_steps: 16
+  include_supervisor_header: true
+  prompt_variant: "zero_shot"    # "custom" + prompt_path to drop in AppWorld's own
+  prompt_path: null
+  max_empty_code_retries: 2
+
+env:
+  # Strongly recommended for parallel runs:
+  #   appworld serve environment --port 8123
+  # then set: remote_environment_url: "http://localhost:8123"
+  remote_environment_url: null
+  extra_kwargs: {}
+
+run:
+  experiment_prefix: "vanilla_qwen2p5_7b_test_normal"
+  split: "test_normal"           # train | dev | test_normal | test_challenge
+  num_rollouts: 8                # k in avg@k / best@k
+  seed_base: 1000
+  max_workers: 4
+  output_dir: "results"
+  resume: true
+  task_ids_file: null            # set to a file from `sample` to subsample
+
+sample:
+  strategy: "scenario_stratified"  # random | scenario_stratified | first_n
+  size: null                       # null = full split
+  seed: 0

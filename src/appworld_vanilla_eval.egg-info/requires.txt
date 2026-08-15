@@ -1,0 +1,5 @@
+requests>=2.31
+PyYAML>=6.0
+
+[appworld]
+appworld>=0.1.3
