@@ -12,7 +12,12 @@ from dataclasses import dataclass, field
 from .config import AgentConfig
 from .llm_client import ChatClient
 from .parsers import ParsedAction, parse_action, truncate_output
-from .prompts import build_first_user_message, build_observation_message, build_system_prompt
+from .prompts import (
+    build_first_user_message,
+    build_observation_message,
+    build_system_prompt,
+    load_official_messages,
+)
 
 
 @dataclass
@@ -39,7 +44,6 @@ class VanillaCodeAgent:
 
     def reset(self, task_instruction: str, supervisor: dict | None) -> None:
         if self.cfg.prompt_variant == "custom" and self.cfg.prompt_path:
-            from .prompts import load_official_messages
             self.messages = load_official_messages(
                 self.cfg.prompt_path, task_instruction, supervisor
             )
@@ -55,14 +59,12 @@ class VanillaCodeAgent:
             ]
         self.steps = []
 
-    # ------------------------------------------------------------------ #
-
     def _context(self) -> list[dict[str, str]]:
         if self.cfg.history_strategy == "full":
             return self.messages
-        # "sliding": always keep the system prompt and the task statement,
-        # then the most recent 2*N messages (assistant/user pairs).
-        head, tail = self.messages[:2], self.messages[2:]
+        # Sliding window: keep initial messages (system + initial prompt), plus last 2*N turns
+        head = self.messages[:2] if len(self.messages) >= 2 else self.messages[:1]
+        tail = self.messages[len(head):]
         keep = self.cfg.keep_last_n_steps * 2
         if len(tail) <= keep:
             return self.messages
@@ -74,10 +76,13 @@ class VanillaCodeAgent:
         return head + [notice] + tail[-keep:]
 
     def propose(self, step_index: int) -> ParsedAction:
-        """Ask the model for the next code block, retrying on unparseable output."""
+        """Query the LLM for the next action, retrying if no code block was emitted."""
         last: ParsedAction | None = None
         for attempt in range(self.cfg.max_empty_code_retries + 1):
-            response = self.client.chat(self._context(), seed=self.seed * 10_000 + step_index * 10 + attempt)
+            response = self.client.chat(
+                self._context(),
+                seed=self.seed * 10_000 + step_index * 10 + attempt,
+            )
             parsed = parse_action(response.text)
             self._pending_usage = (
                 response.prompt_tokens,
@@ -87,7 +92,7 @@ class VanillaCodeAgent:
             if parsed.ok:
                 return parsed
             last = parsed
-            # Nudge and try again; the nudge stays in history only for the retry.
+            # Add nudge to history for retry attempt
             self.messages.append({"role": "assistant", "content": response.text})
             self.messages.append(
                 {

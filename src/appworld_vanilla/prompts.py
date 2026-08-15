@@ -1,26 +1,10 @@
-"""Prompt construction for the vanilla interactive-coding agent.
-
-IMPORTANT
----------
-This is a faithful-in-spirit reimplementation of AppWorld's "code as action"
-agent (ReAct-style: think, emit a Python block, observe the REPL output,
-repeat). It is NOT byte-identical to the prompt shipped in
-StonyBrookNLP/appworld. Prompt wording moves AppWorld scores by several
-points, so if you want to line up with published baseline numbers, copy the
-official prompt out of the appworld repo (`experiments/prompts/`, referenced
-from the agent configs in `experiments/configs/*.jsonnet`) into a text file
-and point `agent.prompt_path` at it with `agent.prompt_variant: custom`.
-
-A custom prompt file may use these placeholders:
-    {task_instruction}, {supervisor_block}, {max_steps}
-"""
+"""Prompt construction and templating for vanilla and custom agent rollouts."""
 
 from __future__ import annotations
 
 import pathlib
 import re
-
-from pathlib import Path
+from typing import Any
 
 from .config import AgentConfig
 
@@ -116,7 +100,7 @@ def build_system_prompt(cfg: AgentConfig) -> str:
     if cfg.prompt_variant == "custom":
         if not cfg.prompt_path:
             raise ValueError("agent.prompt_variant='custom' requires agent.prompt_path")
-        return Path(cfg.prompt_path).read_text()
+        return pathlib.Path(cfg.prompt_path).read_text(encoding="utf-8")
     return SYSTEM_PROMPT
 
 
@@ -146,34 +130,43 @@ def build_observation_message(output: str, step: int, max_steps: int) -> str:
     return f"Execution output:\n{output}{tail}"
 
 
-def load_official_messages(path, task_instruction, supervisor, app_descriptions=""):
-    """Split AppWorld's react_code_agent/instructions.txt into real turns."""
-    raw = pathlib.Path(path).read_text()
+def load_official_messages(
+    path: str | pathlib.Path,
+    task_instruction: str,
+    supervisor: dict[str, Any] | None,
+    app_descriptions: str = "",
+) -> list[dict[str, str]]:
+    """Split AppWorld's react_code_agent prompt templates into proper chat turns."""
+    raw = pathlib.Path(path).read_text(encoding="utf-8")
     sup = supervisor or {}
     subs = {
         "instruction": task_instruction,
         "app_descriptions": app_descriptions,
-        "main_user.first_name": sup.get("first name", ""),
-        "main_user.last_name": sup.get("last name", ""),
+        "main_user.first_name": sup.get("first name", sup.get("first_name", "")),
+        "main_user.last_name": sup.get("last name", sup.get("last_name", "")),
         "main_user.email": sup.get("email", ""),
-        "main_user.phone_number": sup.get("phone number", ""),
+        "main_user.phone_number": sup.get("phone number", sup.get("phone_number", "")),
     }
     for k, v in subs.items():
         raw = re.sub(r"\{\{\s*" + re.escape(k) + r"\s*\}\}", str(v), raw)
 
-    msgs, role, buf = [], None, []
+    msgs: list[dict[str, str]] = []
+    role: str | None = None
+    buf: list[str] = []
+
     for line in raw.split("\n"):
-        if line.strip() in ("USER:", "ASSISTANT:"):
+        stripped = line.strip()
+        if stripped in ("USER:", "ASSISTANT:"):
             if role and buf:
                 msgs.append({"role": role, "content": "\n".join(buf).strip()})
-            role = "user" if line.strip() == "USER:" else "assistant"
+            role = "user" if stripped == "USER:" else "assistant"
             buf = []
         else:
             buf.append(line)
     if role and buf:
         msgs.append({"role": role, "content": "\n".join(buf).strip()})
 
-    merged = []
+    merged: list[dict[str, str]] = []
     for m in msgs:
         if not m["content"]:
             continue

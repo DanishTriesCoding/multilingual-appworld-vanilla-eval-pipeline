@@ -11,13 +11,28 @@ from typing import Any, Iterator
 _LOCK = threading.Lock()
 
 
-def _raw_write(path, text: str, append: bool = False) -> None:
+def _raw_write(path: str | Path, text: str, append: bool = False) -> None:
     """Write bypassing AppWorld's safety_guard, which patches open() to
     read-only process-wide and never restores it."""
     flags = os.O_WRONLY | os.O_CREAT | (os.O_APPEND if append else os.O_TRUNC)
     fd = os.open(str(path), flags, 0o644)
     try:
         os.write(fd, text.encode("utf-8"))
+    finally:
+        os.close(fd)
+
+
+def _raw_read(path: str | Path) -> str:
+    """Read bypassing potential standard file hooks."""
+    fd = os.open(str(path), os.O_RDONLY)
+    try:
+        chunks = []
+        while True:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        return b"".join(chunks).decode("utf-8")
     finally:
         os.close(fd)
 
@@ -30,8 +45,6 @@ class ResultStore:
         self.traj_dir = self.dir / "trajectories"
         os.makedirs(self.traj_dir, exist_ok=True)
 
-    # ---------------------------------------------------------------- #
-
     def completed_keys(self) -> set[tuple[str, int]]:
         keys: set[tuple[str, int]] = set()
         if not self.rollouts_path.exists():
@@ -43,15 +56,15 @@ class ResultStore:
     def iter_rollouts(self) -> Iterator[dict[str, Any]]:
         if not self.rollouts_path.exists():
             return
-        with self.rollouts_path.open() as handle:
-            for line in handle:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    yield json.loads(line)
-                except json.JSONDecodeError:
-                    continue  # tolerate a torn final line from a killed run
+        content = _raw_read(self.rollouts_path)
+        for line in content.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                yield json.loads(line)
+            except json.JSONDecodeError:
+                continue  # tolerate a torn final line from an interrupted run
 
     def load_rollouts(self) -> list[dict[str, Any]]:
         return list(self.iter_rollouts())

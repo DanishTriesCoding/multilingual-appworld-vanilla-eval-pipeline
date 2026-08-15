@@ -1,262 +1,129 @@
-# AppWorld — vanilla Qwen2.5-7B-Instruct evaluation pipeline
+Multilingual AppWorld Vanilla Evaluation PipelineA modular, robust, direct-inference (zero-shot) evaluation harness for the AppWorld benchmark (StonyBrookNLP/appworld).This pipeline is built to evaluate local open-weights LLMs (such as Qwen, Llama, Mistral, and DeepSeek) acting as autonomous code agents in AppWorld's interactive environment, scored via official avg@k and best@k metrics. It connects to any OpenAI-compatible inference endpoint (vLLM, SGLang, Ollama, TGI, llama.cpp) and cleanly supports multilingual evaluations through custom task instruction mappings.Key FeaturesModel & Server Agnostic: Connects to any endpoint exposing POST /v1/chat/completions.Multilingual Task Mapping: Native support for custom/translated instructions via JSON mappings (run.instruction_map_file) without code hacks.Robust Process Isolation: Uses multiprocessing with spawn and process recycling (maxtasksperchild=1) to prevent state pollution and memory leaks across parallel AppWorld rollouts.Sandbox-Safe Persistence: Built-in POSIX file descriptor I/O (os.open/os.write) to bypass AppWorld's process-wide open() read-only monkey-patches during JSONL logging and CSV report exports.Native Custom Prompt Support: Built-in parsing for official multi-turn template prompts (e.g., USER: / ASSISTANT: blocks with Jinja-style variable substitution).Official Metrics & Statistical Analysis: Computes avg@k, best@k, unbiased Codex estimator pass@k, scenario-level SGC metrics, and 95% bootstrap confidence intervals.Resumable Execution: Append-only JSONL trajectory logging with automatic rollout deduplication and resume capability per seed.Directory LayoutMULTILINGUAL-APPWORLD-VANILLA-EVAL-PIPELINE/
+├── .gitignore
+├── pyproject.toml
+├── requirements.txt
+├── README.md
+├── instructions_en.json        # Pre-extracted English task instructions map
+├── task_ids_4.txt              # Task subsample lists
+├── task_ids_36.txt
+├── task_ids_70.txt
+│
+├── configs/
+│   ├── smoke_dev.yaml          # Lightweight 4-task dev smoke test
+│   └── vanilla_qwen7b.yaml     # Main evaluation config (e.g., Qwen2.5-7B-Instruct)
+│
+├── prompts/
+│   └── appworld_official.txt   # Canonical multi-turn AppWorld prompt template
+│
+├── scripts/
+│   ├── run_full_eval.sh        # Bash automation for full evaluation sweeps
+│   └── selftest.py             # Offline, GPU-less pipeline unit test
+│
+├── export_instructions.py      # Utility to dump task instructions to JSON
+├── diag.py                     # Rapid single-task rollout diagnostic utility
+│
+└── src/
+    └── appworld_vanilla/
+        ├── __init__.py
+        ├── agent.py            # Code agent policy & history management
+        ├── cli.py              # CLI entrypoints (check, sample, run, report, official-eval)
+        ├── config.py           # Dataclasses & YAML config parser
+        ├── env.py              # AppWorld environment interface & report normalizer
+        ├── llm_client.py       # OpenAI-compatible API client with retries
+        ├── metrics.py          # avg@k, best@k, pass@k, SGC, & bootstrap CIs
+        ├── parsers.py          # Code block extraction & output truncation
+        ├── prompts.py          # Prompt builders & template message parsers
+        ├── report.py           # Terminal summary renderer & safe CSV exporter
+        ├── runner.py           # Single rollout execution & parallel sweep runner
+        ├── sampler.py          # Task sampling strategies (scenario-stratified)
+        └── storage.py          # Safe JSONL result store & trajectory saver
+Prerequisites & Installation1. Environment SetupClone the repository and install dependencies in a Python 3.10+ virtual environment:git clone [https://github.com/DanishTriesCoding/multilingual-appworld-vanilla-eval-pipeline.git](https://github.com/DanishTriesCoding/multilingual-appworld-vanilla-eval-pipeline.git)
+cd multilingual-appworld-vanilla-eval-pipeline
 
-A modular harness for the **direct-inference baseline** on AppWorld: off-the-shelf
-`Qwen2.5-7B-Instruct` acting in the environment, scored as **avg@8 / best@8**.
-No RL, no self-questioning, no experience pool, no training loop of any kind.
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
 
-It assumes you already have the model served locally behind an OpenAI-compatible
-endpoint (vLLM, SGLang, TGI, llama.cpp, Ollama — anything with
-`POST /v1/chat/completions`).
-
----
-
-## Answers to the questions you asked
-
-**Does `StonyBrookNLP/appworld` work for this?** Yes. It ships the environment
-(9 apps, ~457 APIs), the task datasets, the evaluator, and an `experiments/`
-package with baseline agent configs. This pipeline uses the *library* (`AppWorld`,
-`load_task_ids`, `world.evaluate()`) rather than their experiment runner, so you
-get a clean, hackable loop instead of jsonnet configs — but it writes into the same
-`experiments/outputs/{experiment_name}/` layout, so `appworld evaluate` still works
-on the results.
-
-**How many tasks are there?** 750 total (250 scenarios × 3 tasks), split into
-train / dev / test_normal / test_challenge. I'd rather you not trust a number I
-half-remember here — the exact per-split counts have been reported inconsistently
-in secondary sources. Run:
-
-```bash
-appworld-vanilla check -c configs/vanilla_qwen7b.yaml
-```
-
-and it prints the real count straight from `load_task_ids(split)`. Test set =
-`test_normal` + `test_challenge`.
-
-**Did the paper subsample?** The leaderboard protocol is the full test set, and
-papers reporting AppWorld numbers are expected to follow it. If you want numbers
-comparable to a published table, run both full test splits. If you're doing an
-exploratory replication on a budget, subsample — but see
-[Subsampling](#subsampling-and-how-much-it-costs-you) for what that does to your
-error bars, because it matters a lot when the true score is ~2%.
-
-**One correction on the earlier notes you were given:** the "≈1.8% avg@8 / ≈5.6%
-best@8" vanilla figures were cited to the *Qwen2.5 technical report*. They aren't
-from there — the Qwen tech report doesn't evaluate on AppWorld. Those come from
-the AgentEvolver paper's own baseline row. Worth checking against the actual PDF
-before you treat them as your reproduction target.
-
----
-
-## Install
-
-```bash
-# 1. AppWorld itself
-pip install appworld
-appworld install
-appworld download data          # requires git-lfs
-
-# 2. this pipeline
-cd appworld_vanilla_eval
 pip install -e .
-```
-
-Point the config at your server, then verify both halves are alive:
-
-```bash
+2. AppWorld SetupInstall AppWorld's environment and download its task data:pip install appworld>=0.1.3
+appworld install
+appworld download data
+Quickstart & Verification1. Run the Offline Pipeline Self-TestVerify that the core plumbing (config, parser, agent, runner, storage, metrics, and reporting) works without requiring a GPU or AppWorld dataset downloads:python scripts/selftest.py
+2. Start Your Local LLM ServerServe your model using any OpenAI-compatible server. For example, using vllm:vllm serve Qwen/Qwen2.5-7B-Instruct \
+    --host 0.0.0.0 \
+    --port 8000 \
+    --max-model-len 16384
+3. Run a Health CheckTest the connection between the pipeline, your served LLM, and the AppWorld package:appworld-vanilla check -c configs/smoke_dev.yaml
+4. Run a Fast End-to-End Smoke TestRun a 4-task, 2-rollout smoke run on the dev split:appworld-vanilla run -c configs/smoke_dev.yaml
+Print the resulting report:appworld-vanilla report -c configs/smoke_dev.yaml
+Running Full EvaluationsCLI CommandsThe package provides a unified CLI tool appworld-vanilla:# Health check LLM endpoint and AppWorld setup
 appworld-vanilla check -c configs/vanilla_qwen7b.yaml
-```
 
-This probes `/v1/models`, sends one real completion, and loads the split. Fix
-anything it complains about before running a sweep.
+# Generate a scenario-stratified task list (e.g., 70 tasks)
+appworld-vanilla sample -c configs/vanilla_qwen7b.yaml --out task_ids_70.txt
 
-## Quickstart
+# Execute parallel rollout sweeps
+appworld-vanilla run -c configs/vanilla_qwen7b.yaml
 
-```bash
-# 1. Smoke test: 4 dev tasks x 2 rollouts x 12 steps. Do this first.
-appworld-vanilla run -c configs/smoke_dev.yaml
+# Print summary metrics report & export CSV
+appworld-vanilla report -c configs/vanilla_qwen7b.yaml
 
-# 2. Look at an actual trajectory to sanity-check the prompt and parsing
-cat results/smoke_dev/trajectories/*/seed_7000.json | head -60
-
-# 3. Optional: carve out a subsample
-appworld-vanilla sample -c configs/vanilla_qwen7b.yaml \
-  --set sample.size=60 --out task_ids_60.txt
-
-# 4. Real run
-appworld-vanilla run -c configs/vanilla_qwen7b.yaml \
-  --set run.task_ids_file=task_ids_60.txt
-
-# 5. Re-report without re-running (e.g. at a smaller k)
-appworld-vanilla report -c configs/vanilla_qwen7b.yaml --k 4
-
-# 6. AppWorld's own canonical evaluator, per seed
+# Run official AppWorld evaluation script on generated trajectories
 appworld-vanilla official-eval -c configs/vanilla_qwen7b.yaml
-```
+Command-Line OverridesOverride any configuration parameter dynamically using --set:appworld-vanilla run -c configs/vanilla_qwen7b.yaml \
+  --set run.split=test_challenge \
+        run.num_rollouts=8 \
+        llm.temperature=0.7 \
+        run.max_workers=8
+Multilingual Evaluation WorkflowEvaluating agents on translated instructions is fully supported:Step 1: Export Base InstructionsExport the default English instructions for a given split or task list:python export_instructions.py
+This produces instructions_en.json containing { "task_id": "instruction text" }.Step 2: Translate InstructionsTranslate instructions_en.json into your target language (e.g., instructions_ur.json, instructions_zh.json), keeping the task ID keys intact.Step 3: Run Multilingual SweepPass the translated instructions file via run.instruction_map_file:appworld-vanilla run -c configs/vanilla_qwen7b.yaml \
+  --set run.instruction_map_file=instructions_ur.json \
+        run.experiment_prefix=qwen7b_urdu_eval
+The agent will receive the translated instruction while operating in the standard execution environment.Configuration ReferenceConfiguration files are written in YAML and mapped to typed dataclasses (src/appworld_vanilla/config.py).llm:
+  base_url: "http://localhost:8000/v1"   # Base URL for OpenAI-compatible server
+  api_key: "EMPTY"                       # API key (or "EMPTY" for local servers)
+  model: "Qwen/Qwen2.5-7B-Instruct"      # Model identifier
+  temperature: 0.7                       # > 0 required for stochastic rollouts (avg@k vs best@k)
+  top_p: 0.8
+  max_tokens: 1024
+  timeout: 300
+  max_retries: 4
+  retry_backoff: 2.0
+  send_seed: true
+  extra_body:
+    repetition_penalty: 1.05
 
-Full two-split sweep with an environment server:
-
-```bash
-./scripts/run_full_eval.sh configs/vanilla_qwen7b.yaml
-```
-
-Runs are **resumable** — kill it, rerun the same command, and it skips every
-`(task_id, seed)` already in `rollouts.jsonl`.
-
----
-
-## What a rollout actually does
-
-Standard code-as-action loop. The model gets a system prompt describing the `apis`
-object, then for each step emits one fenced Python block; the block runs in
-AppWorld's persistent IPython session; the output comes back as the next user
-message. The loop ends when the model calls `apis.supervisor.complete_task()`, the
-step budget runs out, or the output can't be parsed. Either way, AppWorld's
-evaluator scores the final world state.
-
-Two details that matter more than they look:
-
-- **Only the first fenced block per message is executed.** 7B models routinely
-  hallucinate an execution output and a follow-up block in the same turn. Taking
-  the first block keeps the environment the sole source of observations.
-- **Sampling must be stochastic.** `temperature: 0.7` by default. At temperature 0
-  all 8 rollouts are identical and `avg@8 == best@8`, which silently makes your
-  numbers meaningless.
-
-## Metrics
-
-Per task, over `k` rollouts:
-
-- **avg@k** — fraction of the k attempts that succeeded, averaged over tasks.
-  "If you try k times, what share of attempts work?"
-- **best@k** — 1 if any of the k attempts succeeded, averaged over tasks.
-  "What share of tasks are solvable within k tries?"
-- **unbiased pass@k** — the Codex estimator, `1 − C(n−c, k)/C(n, k)`. Identical to
-  best@k when `n == k`; use it when you ran more rollouts than the k you're quoting.
-- **95% CIs** — bootstrap over tasks, so you can see whether a difference is real.
-- **Scenario-level (SGC-style)** — a scenario counts only if all its tasks pass.
-  Computed via the `<scenario>_<n>` task-id convention; treat it as indicative and
-  use `official-eval` for the number you'd actually quote.
-
-Outputs land in `results/{experiment_prefix}/`:
-
-```
-rollouts.jsonl                    one line per (task, seed) — the source of truth
-trajectories/{task}/seed_N.json   full messages, code, outputs, eval detail
-per_task.csv                      per-task avg / best / pass@k
-summary.json                      headline numbers
-config.json                       exact config used
-```
-
-## Subsampling, and how much it costs you
-
-The vanilla 7B baseline scores near the floor, and near-floor scores are where
-subsampling hurts most. Rough 95% half-widths on **best@k** for a true rate of 5%:
-
-| tasks sampled | ≈ 95% half-width | reads as |
-|---|---|---|
-| 30 | ±8 pts | 5% ± 8 — indistinguishable from zero |
-| 60 | ±5.5 pts | still very wide |
-| 168 (full test_normal) | ±3.3 pts | usable |
-| 585 (full test set) | ±1.8 pts | comparable to published tables |
-
-So: a 30-task pilot tells you the harness works, not what the score is. If you
-want a number you'd put in a table, run at least full `test_normal`. Use
-`strategy: scenario_stratified` when subsampling so scenarios stay intact and the
-scenario-level metric means something.
-
-**Budget.** Full test set = 585 tasks × 8 rollouts ≈ 4,700 rollouts. Vanilla 7B
-rarely finishes early, so expect a mean near the step cap — call it 70k–115k
-generations, each with a growing multi-turn context. Plan for a long run, raise
-`run.max_workers` to whatever your server's batch throughput supports, and lean on
-resume. The `dev` split with `num_rollouts: 2` is the right place to tune first.
-
-## Configuration
-
-Everything lives in the YAML; anything can be overridden inline with
-`--set dotted.key=value` (values are parsed as YAML, so `null`, `true`, numbers and
-lists all work).
-
-| key | what it does |
-|---|---|
-| `llm.base_url` / `llm.model` | your local server; `model` must match `/v1/models` |
-| `llm.temperature` / `top_p` | keep temperature > 0 |
-| `llm.extra_body` | anything else your server takes, e.g. `repetition_penalty` |
-| `agent.max_steps` | interaction budget per rollout (default 40) |
-| `agent.history_strategy` | `sliding` (default) or `full` if context allows |
-| `agent.output_char_limit` | truncates giant API dumps head-and-tail |
-| `agent.prompt_variant` | `zero_shot`, or `custom` + `prompt_path` |
-| `env.remote_environment_url` | use with `appworld serve environment` for parallelism |
-| `run.num_rollouts` | k |
-| `run.task_ids_file` | subsample list from `sample` |
-| `run.max_workers` | concurrent rollouts |
-
-### Matching published numbers
-
-The built-in prompt (`src/appworld_vanilla/prompts.py`) is faithful in *spirit* to
-AppWorld's code-as-action agent but is **not** byte-identical to theirs. Prompt
-wording moves AppWorld scores by several points, and the official baselines use a
-long few-shot prompt. To close that gap, copy the prompt out of the appworld repo
-(`experiments/prompts/`, referenced from `experiments/configs/*.jsonnet`) into a
-file and set:
-
-```yaml
 agent:
-  prompt_variant: "custom"
-  prompt_path: "prompts/appworld_official.txt"
-```
+  max_steps: 40                          # Maximum code blocks per rollout
+  output_char_limit: 3000                # Head & tail truncation for REPL observations
+  history_strategy: "sliding"            # "sliding" context window or "full"
+  keep_last_n_steps: 16                  # Number of recent steps retained in sliding window
+  include_supervisor_header: true
+  prompt_variant: "zero_shot"            # "zero_shot" (built-in) or "custom"
+  prompt_path: null                      # Path to custom template (e.g. prompts/appworld_official.txt)
+  max_empty_code_retries: 2              # Nudge retries if model outputs no python fence
 
-Placeholders available: `{task_instruction}`, `{supervisor_block}`, `{max_steps}`.
+env:
+  remote_environment_url: null           # Set e.g. "http://localhost:8123" if running remote AppWorld server
+  extra_kwargs: {}
 
-You can also download their precomputed baseline trajectories
-(`appworld download experiment-outputs`) and diff a few against yours — that's the
-fastest way to spot a prompt or step-budget mismatch.
+run:
+  experiment_prefix: "vanilla_eval"      # Results saved in results/<experiment_prefix>_seed<seed>/
+  split: "test_normal"                   # train | dev | test_normal | test_challenge
+  num_rollouts: 8                        # k rollouts per task
+  seed_base: 1000                        # Seed for rollout 0 is seed_base, rollout 1 is seed_base+1, etc.
+  max_workers: 4                         # Parallel worker process count
+  output_dir: "results"
+  resume: true                           # Skip already completed (task_id, seed) rollouts
+  task_ids_file: null                    # Custom task ID subset file (one ID per line)
+  instruction_map_file: null             # Custom/translated instruction JSON map
 
-## Module map
-
-Each file does one thing, so you can replace one without touching the rest.
-
-| module | responsibility |
-|---|---|
-| `config.py` | typed dataclasses, YAML loading, dotted overrides |
-| `llm_client.py` | OpenAI-compatible chat with retries; `ScriptedClient` for tests |
-| `prompts.py` | prompt text and assembly — **edit this to change the agent's brief** |
-| `parsers.py` | completion → (thought, code); output truncation |
-| `env.py` | **the only file that imports `appworld`** — all version drift lands here |
-| `agent.py` | policy: message history, context window management, one step |
-| `runner.py` | one rollout; the parallel, resumable sweep |
-| `sampler.py` | full / random / scenario-stratified task selection |
-| `storage.py` | append-only JSONL + trajectory dumps + resume |
-| `metrics.py` | avg@k, best@k, pass@k, bootstrap CIs, scenario grouping |
-| `report.py` | terminal summary + CSV |
-| `cli.py` | `check` / `sample` / `run` / `report` / `official-eval` |
-
-Swapping in a different agent scaffold means writing one class with
-`reset` / `propose` / `record` and pointing `runner.py` at it. Swapping the model
-means changing `llm.model` and `llm.base_url` — nothing else.
-
-Offline plumbing test (no GPU, no AppWorld data needed):
-
-```bash
-python scripts/selftest.py
-```
-
-## Troubleshooting
-
-**Every rollout ends `unparseable_output`.** The model isn't emitting fenced
-blocks. Read a trajectory's `raw_completion`. Usually the fix is prompt wording or
-raising `max_empty_code_retries`.
-
-**Every rollout hits `max_steps_exhausted` with 0 successes.** Expected to a large
-degree for vanilla 7B — but check a trajectory anyway. If the model never gets past
-`show_app_descriptions`, it's stuck in discovery and never logging in; that's a
-prompt problem, not a model ceiling.
-
-**Parallel runs are flaky or slow.** Start `appworld serve environment --port 8123`
-and set `env.remote_environment_url`. Then raise `max_workers`.
-
-**`world.evaluate()` errors.** AppWorld's evaluator API has shifted across
-versions. `env.normalize_report()` handles dict/object/attribute shapes; if yours
-differs, that one function is the only place to patch.
-
-**Numbers look too good.** Confirm temperature > 0 and that seeds actually differ —
-if avg@8 exactly equals best@8 across the board, your rollouts are duplicates.
+sample:
+  strategy: "scenario_stratified"        # "scenario_stratified" | "random" | "first_n"
+  size: null                             # null -> full split
+  seed: 0
+Evaluation MetricsAppWorld evaluates tasks arranged in scenarios (each scenario contains 3 related tasks):Task Goal Completion (TGC):avg@k: Average success rate across all $k$ rollouts for a task.best@k: Probability that at least 1 of the $k$ rollouts succeeded.unbiased pass@k: Unbiased estimate of pass@k calculated using the Codex estimator when $n \ge k$.Scenario Goal Completion (SGC):Scenario avg@k: Average rate of completely solving all 3 tasks in a scenario.Scenario best@k: Percentage of scenarios where all 3 tasks were solved at least once across rollouts.Statistical Confidence:Computes non-parametric 95% bootstrap confidence intervals across task-level metrics.Architecture & Design PrinciplesSingle Environment Isolation Module (env.py): All dependencies on the upstream appworld library are encapsulated inside env.py.Decoupled Agent Policy (agent.py): The agent receives string observations and emits code strings. It carries no direct dependency on the environment or evaluator logic.Append-Only Result Store (storage.py): Writes individual trajectory files (seed_<seed>.json) and appends JSONL result records immediately upon completion.POSIX File Operations: Avoids open() write locks injected by AppWorld's sandbox evaluator.License & CitationDistributed under the MIT License.If you use this evaluation pipeline or the AppWorld benchmark, please cite:@inproceedings{appworld2024,
+  title={AppWorld: A Controllable World of Apps and Execution Environment for Agent Evaluation},
+  author={Chowdhury, Harsh and others},
+  booktitle={ACL},
+  year={2024}
+}
