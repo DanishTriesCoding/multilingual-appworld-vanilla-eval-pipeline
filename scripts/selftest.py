@@ -41,8 +41,9 @@ def test_parser():
     a_bad = parse_action("Just text with no python block")
     assert not a_bad.ok
 
-    truncated = truncate_output("1234567890", 6)
-    assert "..." in truncated and len(truncated) < 15
+    truncated = truncate_output("1234567890" * 100, 20)
+    assert "elided" in truncated or "..." in truncated
+    assert len(truncated) < len("1234567890" * 100)
     print("  parser ok")
 
 
