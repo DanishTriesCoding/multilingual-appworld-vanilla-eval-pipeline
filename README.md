@@ -10,6 +10,27 @@ endpoint (vLLM, SGLang, TGI, llama.cpp, Ollama — anything with
 
 ---
 
+
+## Methodology & Prompts
+
+This pipeline performs a **vanilla direct-inference run**. By "vanilla," we mean:
+- **No advanced scaffolding**: There is no self-reflection step, no reinforcement learning, no retrieval-augmented generation (RAG), and no experience pool.
+- **Direct code-as-action loop**: The model acts in the environment purely by reading the prompt, emitting a single fenced block of Python code, and receiving the execution output as the next observation. This ReAct-style loop continues until the model explicitly calls the supervisor's `complete_task()` API or hits a step limit.
+- **Prompting**: By default, we use a custom zero-shot system prompt (`src/appworld_vanilla/prompts.py`) that explains the `apis` object, the supervisor, and the rules of the environment.
+
+## Alignment with the Original AppWorld Paper
+
+We heavily leverage the `StonyBrookNLP/appworld` library for the environment, tasks, and official evaluation script (`world.evaluate()`). This ensures that the environments are identical and the final metrics (e.g., avg@k, best@k) are perfectly comparable to published numbers.
+
+However, we deviate from the original paper's setup in a few specific ways:
+- **Custom Runner**: Instead of using their `jsonnet`-based experiment runner and complex baseline configs, we use our own modular Python loop. This provides a cleaner, more hackable pipeline.
+- **Prompts**: As noted, our default built-in prompt is faithful in *spirit* to AppWorld's code-as-action agent, but it is **not** byte-identical. The official baselines use a long few-shot prompt which can move scores significantly.
+- **Single Block Execution**: Our evaluator specifically enforces that *only the first fenced Python block per message is executed*. We truncate hallucinated follow-up blocks to keep the real environment as the sole source of truth.
+
+To strictly match the paper's baseline performance, you must run the full test set and opt-in to their exact prompts (see [Matching published numbers](#matching-published-numbers)).
+
+---
+
 ## Answers to the questions you asked
 
 **Does `StonyBrookNLP/appworld` work for this?** Yes. It ships the environment
